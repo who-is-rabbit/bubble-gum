@@ -1,0 +1,2496 @@
+package cn.campsg.practical.bubble;
+
+
+public class MainClass{
+
+	public static void main(String[] args) {
+		
+		MainForm.show(args);
+	
+	}
+
+}
+package cn.campsg.practical.bubble;
+
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+
+import javafx.animation.ParallelTransition;
+import javafx.application.Application;
+import javafx.application.Platform;
+import javafx.event.ActionEvent;
+import javafx.event.Event;
+import javafx.event.EventHandler;
+import javafx.fxml.FXMLLoader;
+import javafx.scene.Scene;
+import javafx.scene.control.Label;
+import javafx.scene.input.MouseEvent;
+import javafx.scene.layout.AnchorPane;
+import javafx.scene.layout.FlowPane;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.Text;
+import javafx.stage.Stage;
+
+import org.apache.log4j.Logger;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.support.ClassPathXmlApplicationContext;
+
+import cn.campsg.practical.bubble.common.Message;
+import cn.campsg.practical.bubble.common.StarAnimation;
+import cn.campsg.practical.bubble.common.StarFormUtils;
+import cn.campsg.practical.bubble.entity.MovedStar;
+import cn.campsg.practical.bubble.entity.Star;
+import cn.campsg.practical.bubble.entity.StarList;
+import cn.campsg.practical.bubble.service.ScoreService;
+import cn.campsg.practical.bubble.service.StarService;
+
+/**
+ * 泡泡糖窗体类，用于显示泡泡糖阵列、处理泡泡糖点击事件与动画
+ * 
+ * 
+ * @author Frank.Chen
+ * @version 1.5
+ */
+public class MainForm extends Application {
+
+	private Logger logger = Logger.getLogger(MainForm.class);
+
+	private AnchorPane mRoot = null;
+
+	private AnchorPane mAnchorPane = null;
+
+	private Label scoreLabel = null;
+
+	private StarList mCurretStars = null;
+
+	private StarService mStarService = null;
+
+	private ScoreService mScoreService = null;
+
+	// 开始分数为0
+	private static int score = 0;
+
+	// 开始关卡为1
+	private static int currentLevel = 1;
+
+	// 保存通关上一关时的分数，也就是当前这一关的起始分数
+	private static int lastLevelScore = 0;
+
+	// 未通关时保存当前关卡的等级(初始值为第一关)
+	private static int lastLevel = 1;
+
+	// 未通过时当前通关的目标分数（初始目标分数1000）
+	private static int lastLevelTargetScore = 0;
+	
+	public static void show(String[] args) {
+		launch(args);
+	}
+
+	@Override
+	public void start(Stage primaryStage) {
+
+		initServiceComponent();
+
+		try {
+			AnchorPane root = (AnchorPane) FXMLLoader.load(getClass()
+					.getResource("/res/layout/main_layout.fxml"));
+			
+			if (logger.isDebugEnabled())
+				addDebugListener(root);
+
+			// 将主布局加入到视图场景中
+			Scene scene = new Scene(root);
+			primaryStage.setScene(scene);
+
+			// 页面加载时或重新开始新的泡泡糖棋局时候初始化泡泡糖
+			initGameStars(root);
+
+			primaryStage.setTitle("消灭泡泡糖-Popstar3");
+			primaryStage.setResizable(false);
+			primaryStage.show();
+
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+
+	}
+	
+	private void addDebugListener(AnchorPane root) {
+		
+		root.setOnMouseClicked(new EventHandler<Event>() {
+
+			@Override
+			public void handle(Event event) {
+				logger.debug(event.getTarget().getClass().getName());
+				
+				if(event.getTarget() instanceof Text) {
+					logger.debug(((Text)event.getTarget()).getText());
+				}
+			}
+		});
+	}
+
+	/**
+	 * 页面加载时或重新开始新的泡泡糖棋局时候初始化泡泡糖
+	 * 
+	 * @param root
+	 *            窗体总布局
+	 * 
+	 */
+	private void initGameStars(AnchorPane root) {
+
+		// 调用业务层获取随机10*10泡泡糖阵列
+		mCurretStars = mStarService.createBubbleMatrix();
+
+		if (mCurretStars == null || mCurretStars.size() == 0) {
+			logger.error("服务端没有提供正确的泡泡糖阵列");
+			return;
+		}
+
+		mRoot = root;
+
+		// 获取泡泡糖布局对象
+		mAnchorPane = (AnchorPane) root.lookup("#game_pane");
+		
+		// 调试状态下可显示泡泡糖的坐标
+		if (logger.isDebugEnabled())
+			showStarsCoordinate();
+
+		StartEventHandler handler = new StartEventHandler();
+
+		// 将StarList中的所有Star对象转换成Label视图对象
+		List<Label> starFrames = StarFormUtils.convert(mCurretStars);
+		for(Label starFrame : starFrames)
+			starFrame.setOnMouseClicked(handler);
+
+		// 将Label加入到视图布局中
+		for (int i = 0; i < starFrames.size(); i++) {
+			mAnchorPane.getChildren().add(starFrames.get(i));
+		}
+
+		// 获得第一关的通关分数
+		lastLevelTargetScore = mScoreService.getCurrentLevelScore();
+
+		Label lastLevelTargetScore1 = (Label) root.lookup("#targetScore");
+		lastLevelTargetScore1.setText(lastLevelTargetScore+"");
+	}
+
+	/**
+	 * 调试状态下可显示泡泡糖的坐标
+	 * 
+	 * @param root
+	 * @param pane
+	 */
+	private void showStarsCoordinate() {
+
+		// 获取菜单对象
+		FlowPane menu_title = (FlowPane) mRoot.lookup("#menu_title");
+
+		menu_title.setOnMousePressed(new EventHandler<MouseEvent>() {
+
+			@Override
+			public void handle(MouseEvent event) {
+				for (int i = 0; i < mAnchorPane.getChildren().size(); i++) {
+					Label button = (Label) mAnchorPane.getChildren().get(i);
+					button.setText("(" + button.getId() + ")");
+				}
+			}
+
+		});
+
+		menu_title.setOnMouseClicked(new EventHandler<MouseEvent>() {
+
+			@Override
+			public void handle(MouseEvent event) {
+				for (int i = 0; i < mAnchorPane.getChildren().size(); i++) {
+					Label button = (Label) mAnchorPane.getChildren().get(i);
+					button.setText("");
+				}
+
+			}
+
+		});
+	}
+
+	/**
+	 * 初始化并加载服务类组件
+	 */
+	private void initServiceComponent() {
+
+		ApplicationContext context = new ClassPathXmlApplicationContext(
+				"service.xml");
+
+		try {
+			mStarService = (StarService) context.getBean("starService");
+
+			mScoreService = (ScoreService) context.getBean("scoreService");
+
+		} catch (Exception e) {
+
+			logger.error("无法加载StarService和ScoreService，系统非法退出");
+			System.exit(0);
+		}
+	}
+	
+	protected boolean isClickAvailable = true;
+	
+	/**
+	 * 泡泡糖被点击的事件处理对象
+	 */
+	public class StartEventHandler implements EventHandler<MouseEvent> {
+
+		public StartEventHandler() {
+			mAnchorPane = (AnchorPane) mRoot.lookup("#game_pane");
+			scoreLabel = (Label) mRoot.lookup("#lblScore");
+		}
+
+		@Override
+		public void handle(MouseEvent event) {
+
+			if(isClickAvailable == false)
+				return;
+			
+			isClickAvailable = false;
+			
+			// 获取被点击的泡泡糖视图
+			Label starFrame = (Label) event.getTarget();
+
+			// 将视图转换为泡泡糖实体
+			Star base = StarFormUtils.convert(starFrame);
+
+			// 从服务端获取需要清除的泡泡糖列表
+			StarList clearStars = mStarService.tobeClearedStars(base,
+					mCurretStars);
+
+			// 无需消除泡泡糖，则停止点击事件的处理（例如：用户点击的泡泡糖周边没有关联颜色的泡泡糖）
+			if (clearStars == null || clearStars.size() == 0){
+				isClickAvailable = true;
+				return;
+			}
+
+			// 从服务端获取需要移动的泡泡糖（垂直方向的）
+			StarList movedYStars = mStarService.getVMovedStars(clearStars,
+					mCurretStars);
+
+			// 根据从服务端获取需要清除的泡泡糖列表，清除对应的视图
+			clearStars(clearStars);
+
+			if (logger.isDebugEnabled())
+				logger.debug("清除后相关泡泡糖后，内存泡泡糖对象阵列:" + mCurretStars);
+
+			// 创建线程同步器，用于保证水平泡泡糖移动慢于垂直移动
+			CountDownLatch yLatch = new CountDownLatch(movedYStars.size());
+
+			// 移动界面上的泡泡糖，并保证水平移动在垂直移动后完成
+			moveYStars(movedYStars, yLatch);
+
+			if (logger.isDebugEnabled())
+				logger.debug("垂直方向泡泡糖移动后（Y轴），内存泡泡糖对象阵列:" + mCurretStars);
+
+			// 移动水平方向的泡泡糖（在垂直方向星星完成后操作）
+			new MoveXStarController(yLatch).start();
+
+			// 显示分数动画
+			showScore(clearStars);
+		}
+
+	}
+
+	/**
+	 * 每次消除一组泡泡糖后，显示分数动画
+	 * 
+	 * @param clearStars
+	 *            待消除的泡泡糖列表
+	 * 
+	 */
+	private void showScore(StarList clearStars) {
+
+		int addScore = mScoreService.getScoreByStars(clearStars);
+
+		if (addScore != 0) {
+
+			// 获得所有待移动泡泡糖的坐标
+			List<Integer> clearStarsCoordinate = StarFormUtils
+					.getClearStarsCoordinate(clearStars);
+
+			// 动画显示点击所得增加分数
+			ParallelTransition parallelTransition = StarAnimation
+					.getScoreAnimation(mRoot, clearStarsCoordinate,
+							mScoreService);
+			parallelTransition.play();
+
+			score += addScore;
+
+			// 刷新总得分
+			scoreLabel.setText("分数: " + score);
+		}
+
+		// 当分数第一次达到每一关的目标分数时出现通关通知
+		if (mScoreService.isNoticedPassLevel(currentLevel, score))
+			StarAnimation.passedFlag(mAnchorPane);
+	}
+
+	private class RestartEvent implements EventHandler<MouseEvent> {
+		private AnchorPane root = null;
+		private Label failedNotice = null;
+
+		public RestartEvent(AnchorPane root, Label failedNotice) {
+			this.root = root;
+			this.failedNotice = failedNotice;
+		}
+
+		@Override
+		public void handle(MouseEvent event) {
+
+			// 清楚失败通知
+			StarAnimation.clearAwardLable(root, failedNotice);
+			// 初始本关初始成绩
+			score = lastLevelScore;
+			// 重新初始化
+			initGameStars(root);
+
+			// 拿到通关等级和目标分数Label
+			Label lastLevelNum = (Label) root.lookup("#lblCheckpoint");
+			Label lastLevelTargetScore1 = (Label) root.lookup("#targetScore");
+			Label rebackScore = (Label) root.lookup("#lblScore");
+
+			// 初始通关等级
+			lastLevelNum.setText("第" + lastLevel + "关");
+
+			// 初始目标分数
+			lastLevelTargetScore1.setText("" + lastLevelTargetScore);
+
+			// 回滚得分总数
+			rebackScore.setText("" + lastLevelScore);
+
+		}
+
+	}
+
+	/**
+	 * 水平方向泡泡糖的移动线程（它将在垂直方向线程移动后执行）
+	 * 
+	 */
+	class MoveXStarController extends Thread {
+
+		private CountDownLatch latch = null;
+
+		public MoveXStarController(CountDownLatch latch) {
+			this.latch = latch;
+		}
+
+		@Override
+		public void run() {
+
+			try {
+				// 确保水平移动在垂直移动后完成
+				latch.await();
+				Thread.sleep(100);
+
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+
+			// 获取需要移动的定星球
+			StarList xStars = mStarService.getHMovedStars(mCurretStars);
+
+			int size = xStars == null ? 0 : xStars.size();
+
+			// 当没有可清除目标时进入判断是否切关
+			CountDownLatch xLatch = new CountDownLatch(size);
+			
+			moveXStars(xStars, xLatch);
+
+			new ClearScreenController(xLatch).start();
+
+		}
+
+	}
+
+	/**
+	 * 当无可消除的泡泡糖的清屏线程
+	 *
+	 */
+	class ClearScreenController extends Thread {
+
+		private CountDownLatch latch = null;
+
+		public ClearScreenController(CountDownLatch latch) {
+			this.latch = latch;
+		}
+
+		@Override
+		public void run() {
+
+			try {
+				// 确保水平移动在垂直移动后完成
+				latch.await();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+
+			isClickAvailable = true;
+
+			// 当Y轴方向与X轴方向泡泡糖都已经移动完毕后（线程执行完毕后）
+			// 再判定是否还有可消除的泡泡糖，如果有再执行清屏与奖励动画
+			if (mStarService.tobeEliminated(mCurretStars))
+				return;
+
+			Platform.runLater(new Runnable() {
+
+				@Override
+				public void run() {
+					// 执行清屏与奖励动画
+					runAwardAnimation();
+				}
+
+			});
+
+		}
+	}
+
+	/**
+	 * 移动界面上的泡泡糖，并保证水平移动在垂直移动后完成
+	 * 
+	 * @param movedStars
+	 *            所有需要移动的泡泡糖列表（x轴+y轴）
+	 * @param yStars
+	 *            仅垂直方向需要移动的泡泡糖列表（y轴）
+	 * @param latch
+	 *            线程同步器，用于确保水平移动在垂直移动后完成
+	 */
+	private void moveYStars(StarList movedStars, CountDownLatch latch) {
+
+		for (int i = 0; i < movedStars.size(); i++) {
+			// 获取待移动的泡泡糖
+			MovedStar mStar = (MovedStar)movedStars.get(i);
+
+			// 移动后需要更细内存中泡泡糖的坐标与样式
+			mCurretStars.update(mStar.getPosition().getRow(), mStar
+					.getPosition().getColumn(), mStar
+					.getMovedPosition().getRow(), mStar.getMovedPosition()
+					.getColumn());
+
+			// 转换为视图对象
+			Label starFrame = StarFormUtils.findFrame(mStar,
+					mAnchorPane);
+
+			// 动画移动泡泡糖
+			StarAnimation.slideYStar(
+					starFrame,
+					mStar.getMovedPosition().getRow()
+							* StarFormUtils.STAR_HEIGHT).setOnFinished(
+					new EventHandler<ActionEvent>() {
+						@Override
+						public void handle(ActionEvent event) {
+							latch.countDown();
+						}
+					});
+
+			// 更新控件的ID值
+			starFrame.setId("s" + mStar.getMovedPosition().getRow()
+					+ mStar.getMovedPosition().getColumn());
+			// 更新控件的传参属性
+			starFrame.setUserData(mStar.getMovedPosition().getRow() + ";"
+					+ mStar.getMovedPosition().getColumn());
+
+			// 更新列坐标
+			mStar.getPosition()
+					.setColumn(mStar.getMovedPosition().getColumn());
+
+		}
+
+	}
+
+	/**
+	 * 移动界面上水平方向的泡泡糖
+	 * 
+	 * @param xStars
+	 *            仅水平方向需要移动的泡泡糖列表（x轴）
+	 */
+	private void moveXStars(StarList xStars, CountDownLatch xLatch) {
+
+		if(xStars == null)
+			return;
+		
+		for (int i = 0; i < xStars.size(); i++) {
+			// 获取待移动的泡泡糖
+			MovedStar mStar = (MovedStar)xStars.get(i);
+
+			// 移动后需要更细内存中泡泡糖的坐标与样式
+			mCurretStars.update(mStar.getPosition().getRow(), mStar
+					.getPosition().getColumn(), mStar
+					.getMovedPosition().getRow(), mStar.getMovedPosition()
+					.getColumn());
+
+			// 转换为视图对象
+			Label starFrame = StarFormUtils.findFrame(mStar,
+					mAnchorPane);
+
+			// 动画移动泡泡糖
+			StarAnimation.slideXStar(
+					starFrame,
+					mStar.getMovedPosition().getColumn()
+							* StarFormUtils.STAR_WIDTH).setOnFinished(
+					new EventHandler<ActionEvent>() {
+
+						@Override
+						public void handle(ActionEvent event) {
+							if (xStars != null && xStars.size() > 0)
+								xLatch.countDown();
+						}
+					});
+
+			// 更新控件的ID值
+			starFrame.setId("s" + mStar.getMovedPosition().getRow()
+					+ mStar.getMovedPosition().getColumn());
+			starFrame.setUserData(mStar.getMovedPosition().getRow() + ";"
+					+ mStar.getMovedPosition().getColumn());
+
+		}
+	}
+
+	/**
+	 * 根据从服务端获取需要清除的泡泡糖列表，清除对应的视图
+	 * 
+	 * @param clearStars
+	 *            从服务端获取需要清除的泡泡糖列表
+	 */
+	private void clearStars(StarList clearStars) {
+		if (clearStars == null || clearStars.size() == 0)
+			return;
+
+		for (Star star : clearStars) {
+
+			Label starFrame = StarFormUtils.findFrame(star, mAnchorPane);
+
+			// 删除界面上的泡泡糖
+			StarAnimation.clearStarLable(mAnchorPane, starFrame);
+
+			// 删除内存中的泡泡糖（与界面保持一致）
+			mCurretStars.setNull(star.getPosition().getRow(), star
+					.getPosition().getColumn());
+		}
+	}
+
+	/**
+	 * 执行清屏与奖励动画
+	 * @return 
+	 */
+	private void runAwardAnimation() {
+		// 将视图中不能消除的泡泡糖转化为待消除泡泡糖
+		StarList awardStarList = mStarService.getAwardStarList(mCurretStars);
+		// 设置计数器，确保全部泡泡糖消除后再切关
+		CountDownLatch slach = new CountDownLatch(awardStarList.size());
+		// 奖励分数初始值为0
+		int awardScore = mScoreService.getAwardScore(awardStarList.size());
+		// 动画显示奖励分数，并且在显示奖励分数后触发清屏事件
+		StarAnimation.awardAnimation(mRoot, awardScore, awardStarList)
+				.setOnFinished(new EventHandler<ActionEvent>() {
+					@Override
+					public void handle(ActionEvent event) {
+						// 清除泡泡糖
+						// clearStars(awardStarList);
+
+						score += awardScore;
+						// 刷新总得分
+						scoreLabel.setText("分数: " + score);
+						// 每消除一个泡泡糖，待消除泡泡糖计数器减1
+						clearLeftStar(awardStarList, slach);
+						// 保证清除完泡泡糖后看是否切关
+						new ChangeLevelThread(slach).start();
+
+					}
+				});
+	}
+
+	/**
+	 * 
+	 * 切关动画控制器，该动画控制器必须在清屏线程执行完毕后才可以执行
+	 *
+	 */
+	class ChangeLevelThread extends Thread {
+		private CountDownLatch latch = null;
+
+		public ChangeLevelThread(CountDownLatch latch) {
+			this.latch = latch;
+		}
+
+		@Override
+		public void run() {
+			try {
+				latch.await();
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+
+			Platform.runLater(new Runnable() {
+
+				@Override
+				public void run() {
+					// 是否满足切关要求
+					if (mScoreService.isChangeLevel(score)) {
+						// 切关
+						changeLevel();
+					} else {
+						// 通关失败，显示失败通知
+						Label failedNotice = new Label(Message.LEVEL_FAULT);
+						failedNotice.setFont(new Font(40.0));
+						failedNotice.setLayoutX(63.0);
+						failedNotice.setLayoutY(280.0);
+						failedNotice.setTextFill(Color.WHITE);
+						mRoot.getChildren().add(failedNotice);
+
+						// 注册鼠标事件，选择是否继续通关
+						RestartEvent restart = new RestartEvent(mRoot,
+								failedNotice);
+						failedNotice.setOnMouseClicked(restart);
+
+					}
+				}
+			});
+
+		}
+
+	}
+
+	// 计数要清除的泡泡糖个数
+	private void clearLeftStar(StarList awardStarList,
+			CountDownLatch awardStarLatch) {
+		if (awardStarList == null || awardStarList.size() == 0) {
+			return;
+		}
+
+		for (Star star : awardStarList) {
+			Label starFrame = StarFormUtils.findFrame(star, mAnchorPane);
+			// 删除界面上的奖励泡泡糖,并且在消除一个泡泡糖后将待消除泡泡糖个数减1
+			StarAnimation.clearAwardLable(mAnchorPane, starFrame)
+					.setOnFinished(new EventHandler<ActionEvent>() {
+
+						@Override
+						public void handle(ActionEvent event) {
+							// 删除内存中的泡泡糖（与界面保持一致）
+							mCurretStars.setNull(star.getPosition().getRow(),
+									star.getPosition().getColumn());
+							// 待清除泡泡糖个数计数器1
+							awardStarLatch.countDown();
+							if (logger.isDebugEnabled()) {
+								logger.debug("当前剩余泡泡糖数量=====" + awardStarList
+										+ "countDl=="
+										+ awardStarLatch.getCount());
+							}
+						}
+
+					});
+
+		}
+
+	}
+
+	/**
+	 * 切关动画
+	 */
+	private void changeLevel() {
+		// 切换关卡，游戏等级加1
+		currentLevel++;
+		// 保存切换关卡等级，用于闯关失败恢复
+		lastLevel = currentLevel;
+		// 保存切换关卡分数，用于失败恢复初始分数
+		lastLevelScore = score;
+		// 返回切换关卡时的对应的目标分数
+
+		int nextLevelTargetScore = mScoreService.nextLevelTarget(currentLevel);
+		// 显示下一关卡等级和目标分数完成后再进入下一关
+		StarAnimation.passNotice(mAnchorPane, currentLevel,
+				nextLevelTargetScore).setOnFinished(
+				new EventHandler<ActionEvent>() {
+
+					@Override
+					public void handle(ActionEvent event) {
+						initGameStars(mRoot);
+						// 拿到关卡等级
+						Label levelNum = (Label) mRoot.lookup("#lblCheckpoint");
+
+						// 拿到目标得分视图对象
+						Label targetScore = (Label) mRoot
+								.lookup("#targetScore");
+						// 设置关卡等级
+						levelNum.setText("第" + currentLevel + "关");
+						// 设置目标分数
+						targetScore.setText("" + nextLevelTargetScore);
+						// 保存目标分数，用于失败恢复时设置目标分数
+						lastLevelTargetScore = nextLevelTargetScore;
+						return;
+
+					}
+
+				});
+	}
+
+}
+package cn.campsg.practical.bubble.common;
+
+/**
+ * 
+ * 消息类，用于保存所有窗体显示消息
+ * 
+ * 
+ * @author Frank.Chen
+ * @version 1.0
+ *
+ */
+public final class Message {
+	
+	public static final String MESSAGE="完美";
+	
+	public static final String LEVEL_FAULT = "通关失败，点我重玩";
+	
+	public static final String LEVEL_OK = "恭喜通关";
+	
+	public static final String PROJECT_TITLE = "消灭泡泡糖-Bubble";
+}
+package cn.campsg.practical.bubble.common;
+
+import java.util.List;
+
+import javafx.animation.FadeTransition;
+import javafx.animation.KeyFrame;
+import javafx.animation.KeyValue;
+import javafx.animation.ParallelTransition;
+import javafx.animation.PathTransition;
+import javafx.animation.PauseTransition;
+import javafx.animation.ScaleTransition;
+import javafx.animation.SequentialTransition;
+import javafx.animation.Timeline;
+import javafx.application.Platform;
+import javafx.event.ActionEvent;
+import javafx.event.EventHandler;
+import javafx.scene.Node;
+import javafx.scene.control.Label;
+import javafx.scene.layout.AnchorPane;
+import javafx.scene.paint.Color;
+import javafx.scene.shape.LineTo;
+import javafx.scene.shape.MoveTo;
+import javafx.scene.shape.Path;
+import javafx.scene.shape.Polyline;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+import javafx.scene.text.Text;
+import javafx.util.Duration;
+import cn.campsg.practical.bubble.entity.StarList;
+import cn.campsg.practical.bubble.service.ScoreService;
+
+public final class StarAnimation {
+
+	// 泡泡运动路径时间
+	public static final int START_PATH_TIME = 300;
+	// 泡泡渐变时间
+	public static final int START_FADE_TIME = 300;
+	// 出现自定义message的等级
+	public static final int MESSAGE_LEVEL = 6;
+	// 第一颗泡泡糖的分数
+	public static final int FIRST_START_SCORE = 5;
+	// 连消渐变时间
+	public static final int SCORE_FADE_TIME = 1000;
+	// 动画偏移时间
+	public static final int OFFSET_TIME = 200;
+	// 分数偏移量
+	public static final int OFFSET_SCORE = 10;
+	// 过关通知位置X坐标
+	public static final int PASSNOTICE_X = 180;
+	// 过关通知位置Y坐标
+	public static final int PASSNOTICE_Y = 180;
+	// 泡泡糖得分运动目标路径X坐标
+	public static final double TARGET_PATH_X = 240;
+	// 泡泡糖得分运动目标路径Y坐标
+	public static final double TARGET_PATH_Y = 122;
+	// 过关前显示泡泡糖剩余信息个数起始X坐标
+	public static final double LEFTINF_START_X = 480;
+	// 过关前显示泡泡糖剩余信息个数起始Y坐标
+	public static final double LEFTINF_START_Y = 300;
+	// 过关前显示泡泡糖个数终点坐标X
+	public static final double LEFTINF_END_X = 0;
+	// 过关前显示泡泡糖奖励信息起点Y坐标
+	public static final double AWARDINF_START_Y = 350;
+	// 泡泡糖剩余信息水平运动时间
+	public static final double LEFTINF_PATH_TIME = 300;
+	// 泡泡糖奖励信息水平运动时间
+	public static final double AWARDINF_H_TIME = 300;
+	// 泡泡糖奖励信息垂直运动时间
+	public static final double AWARDINF_V_TIME = 300;
+	// 通知下一关信息的X坐标
+	public static final double CHANGE_LEVEL_NOTICE_X = 120;
+	// 通知下一关信息的Y坐标
+	public static final double CHANGE_LEVEL_NOTICE_Y = 160;
+
+	/**
+	 * 动画垂直移动泡泡糖视图对象
+	 * 
+	 * @param starFrame
+	 *            泡泡糖视图对象
+	 * @param span
+	 *            移动距离
+	 */
+	public static Timeline slideYStar(Label starFrame, int span) {
+		final Timeline timeline = new Timeline();
+		// 移动模式，param0：移动的坐标系，param1：坐标系对应的移动距离
+		final KeyValue kv = new KeyValue(starFrame.layoutYProperty(), span);
+		// 设置移动时间
+		final KeyFrame kf = new KeyFrame(Duration.millis(200), kv);
+		timeline.getKeyFrames().add(kf);
+		timeline.play();
+
+		return timeline;
+	}
+
+	/**
+	 * 动画水平移动泡泡糖视图对象
+	 * 
+	 * @param starFrame
+	 *            泡泡糖视图对象
+	 * @param span
+	 *            移动距离
+	 */
+	public static Timeline slideXStar(Label starFrame, int span) {
+		final Timeline timeline = new Timeline();
+		// 移动模式，param0：移动的坐标系，param1：坐标系对应的移动距离
+		final KeyValue kv = new KeyValue(starFrame.layoutXProperty(), span);
+		// 设置移动时间
+		final KeyFrame kf = new KeyFrame(Duration.millis(200), kv);
+		timeline.getKeyFrames().add(kf);
+		timeline.play();
+
+		return timeline;
+	}
+
+	/**
+	 * 以渐变动画删除待消除的泡泡糖
+	 * 
+	 * @param mAnchorPane
+	 *            泡泡糖显示阵列
+	 * @param starFrame
+	 *            待消除的泡泡糖
+	 */
+	public static void clearStarLable(AnchorPane mAnchorPane, Label starFrame) {
+		fadeOut(starFrame).setOnFinished(new EventHandler<ActionEvent>() {
+			@Override
+			public void handle(ActionEvent event) {
+				mAnchorPane.getChildren().remove(starFrame);
+			}
+		});
+	}
+
+	/**
+	 * JFX渐变动画
+	 * 
+	 * @param starFrame
+	 *            设置渐变的组件
+	 * 
+	 * @return 动画组件
+	 */
+	public static FadeTransition fadeOut(Label starFrame) {
+		FadeTransition ft = new FadeTransition(Duration.millis(10), starFrame);
+		ft.setFromValue(1.0);
+		ft.setToValue(0.0);
+		ft.setAutoReverse(false);
+		ft.play();
+		return ft;
+	}
+
+	public static FadeTransition clearAwardLable(AnchorPane mAnchorPane,
+			Label starFrame) {
+		FadeTransition starFade = fadeOut(starFrame);
+		fadeOut(starFrame).setOnFinished(new EventHandler<ActionEvent>() {
+			@Override
+			public void handle(ActionEvent event) {
+				mAnchorPane.getChildren().remove(starFrame);
+			}
+		});
+		return starFade;
+	}
+
+	/**
+	 * 
+	 * 消除泡泡糖的得分动画
+	 * 
+	 * @param root
+	 *            泡泡糖显示阵列
+	 * @param clearStarsCoordinate
+	 *            待消除泡泡糖的坐标集合
+	 * @param scoreService
+	 *            得分服务类
+	 * @return 消除泡泡糖的动画集合
+	 */
+	public static ParallelTransition getScoreAnimation(AnchorPane root,
+			List<Integer> clearStarsCoordinate, ScoreService scoreService) {
+		// 根据集合大小计算消除的泡泡糖个数为集合一半，（每个泡泡糖有X,Y坐标）
+		int starNum = clearStarsCoordinate.size() / 2;
+		// 根据消除泡泡糖个数计算总得分
+		String addScore = "" + scoreService.getScoreByNum(starNum);
+		// 获取需要学生点击得分的Label
+		Label scoreLabel = (Label) root.lookup("#lblMessage");
+		// 添加显示内容如2连消20
+		scoreLabel.setText(starNum + "连消" + addScore);
+
+		// 生成可以并行执行动画的对象
+		ParallelTransition parallelTransition = new ParallelTransition();
+		int j = 0;
+		for (int i = 0; i < starNum; i++) {
+			// 依次取出第i个泡泡糖x坐标
+			int starX = clearStarsCoordinate.get(j);
+			j++;
+			// 依次取出第i个泡泡糖y坐标
+			int starY = clearStarsCoordinate.get(j);
+			j++;
+			// 设置第i个泡泡糖位置（ starX, starY），显示分数(5+StarFormUtils.OFFSET_SCORE*i)
+			Text starLabel = addNode(
+					root,
+					25,
+					starX,
+					starY,
+					""
+							+ (StarAnimation.FIRST_START_SCORE + StarAnimation.OFFSET_SCORE
+									* i));
+			// 设置第i个泡泡糖位置（ starX,
+			// starY）运动到（StarFormUtils.TARGET_PATH_X,StarFormUtils.TARGET_PATH_Y）
+			PathTransition starPath = scorePath(starX, starY,
+					StarAnimation.TARGET_PATH_X, StarAnimation.TARGET_PATH_Y,
+					StarAnimation.START_PATH_TIME + StarAnimation.OFFSET_TIME
+							* i, starLabel);
+			// 设置第i个泡泡糖渐变时间
+			FadeTransition starFade = scoreFadeOut(
+					StarAnimation.START_FADE_TIME + StarAnimation.OFFSET_TIME
+							* i, starLabel);
+			starFade.setOnFinished(new EventHandler<ActionEvent>() {
+				@Override
+				public void handle(ActionEvent event) {
+					root.getChildren().remove(starLabel);
+				}
+			});
+			parallelTransition.getChildren().addAll(starPath, starFade);
+			if (i == StarAnimation.MESSAGE_LEVEL) {
+				addScore = Message.MESSAGE;
+				break;
+			}
+		}
+		// 所点击泡泡糖获得总分数的显示坐标，初始值为所点击泡泡糖的坐标
+		int clickPointX = clearStarsCoordinate.get(0);
+		int clickPointY = clearStarsCoordinate.get(1);
+
+		// 判断第一个泡泡是否在第1,2列，则显示总分坐标加1列，点击坐标两端可能不会完整显示点击得分
+		if (clickPointX == 0 || clickPointX == StarFormUtils.STAR_WIDTH) {
+			clickPointX = clickPointX + StarFormUtils.STAR_WIDTH;
+		}
+
+		// 设置点击总得分addScore
+		Text clickPoint = addNode(root, 20, clickPointX, clickPointY, addScore);
+		// 设置显示点击总得分在600毫秒完成从放大4倍到原始大小
+		ScaleTransition clickPointScale = scoreScale(300, clickPoint, 4, 1);
+		// 设置点击得分数渐变时间10毫秒
+		FadeTransition clickPointFade = scoreFadeOut(10, clickPoint);
+		clickPointFade.setOnFinished(new EventHandler<ActionEvent>() {
+			@Override
+			public void handle(ActionEvent event) {
+				root.getChildren().remove(clickPoint);
+			}
+		});
+
+		// 生成连续执行对象：clickPoint点击得分先clickPointScale（缩放）停留50毫秒，再渐变消失
+		SequentialTransition seqTransition = new SequentialTransition(
+				clickPointScale, new PauseTransition(Duration.millis(50)),
+				clickPointFade);
+		// 设置显示连消scoreLabel的渐变时间2200毫秒
+		FadeTransition scoreLabelFade = scoreFadeOut(
+				StarAnimation.SCORE_FADE_TIME, scoreLabel);
+		parallelTransition.getChildren().addAll(seqTransition, scoreLabelFade);
+
+		// 设置循环次数
+		parallelTransition.setCycleCount(1);
+
+		return parallelTransition;
+
+	}
+
+	/**
+	 * 设置节点的渐变效果
+	 * 
+	 * @param duration设置渐变时间
+	 * @param scoreLabel设置目标渐变节点
+	 * 
+	 * */
+	public static FadeTransition scoreFadeOut(int duration, Node scoreLabel) {
+		// 设置要进行渐变的目标scoreLabel，及渐变时间duration
+		FadeTransition fadeTransition = new FadeTransition(
+				Duration.millis(duration), scoreLabel);
+		// 设置渐变起始值
+		fadeTransition.setFromValue(1.0f);
+		// 渐变终止值
+		fadeTransition.setToValue(0.0);
+		// 设置循环次数和是否反转
+		fadeTransition.setCycleCount(1);
+		fadeTransition.setAutoReverse(false);
+		return fadeTransition;
+	}
+
+	/**
+	 * 设置目标节点的运动路径
+	 * 
+	 * @param scoreLabelX节点运动起始位置x坐标
+	 * @param scoreLabelY节点运动起始位置y坐标
+	 * @param duration节点运动时间
+	 * @param scoreLabel运动的目标节点
+	 * 
+	 * */
+	public static PathTransition scorePath(double scoreLabelX,
+			double scoreLabelY, double targetX, double targetY,
+			double duration, Node scoreLabel) {
+		Path path = new Path();
+		// 设置目标路径的起始坐标scoreLabelX，scoreLabelY
+		path.getElements().add(new MoveTo(scoreLabelX, scoreLabelY));
+		// 设置运动轨迹，按照直线运动到目标坐标(targetX, targetY)
+		path.getElements().add(new LineTo(targetX, targetY));
+		// new 出路径对象
+		PathTransition pathTransition = new PathTransition();
+		// 设置到达目标路径时间
+		pathTransition.setDuration(Duration.millis(duration));
+		// 设置按照path路径运动
+		pathTransition.setPath(path);
+		// 设置所要运动的label
+		pathTransition.setNode(scoreLabel);
+		// 设置循环次数和是否反转
+		pathTransition.setCycleCount(1);
+		pathTransition.setAutoReverse(false);
+		return pathTransition;
+	}
+
+	/**
+	 * 设置Node节点的缩放效果
+	 * 
+	 * @param duration缩放时间
+	 * @param scoreLabel缩放的目标节点
+	 * @param setFrom缩放起始大小
+	 * @param setTo缩放的目标大小
+	 * 
+	 * */
+	public static ScaleTransition scoreScale(int duration, Node scoreLabel,
+			int setFrom, int setTO) {
+
+		ScaleTransition scaleTransition = new ScaleTransition(
+				Duration.millis(duration), scoreLabel);
+		// 设置缩放的X,Y方向大小起始
+		scaleTransition.setFromX(setFrom);
+		scaleTransition.setFromY(setFrom);
+		// 设置缩放X,Y方向的目标大小
+		scaleTransition.setToX(setTO);
+		scaleTransition.setToY(setTO);
+		// 设置循环显示次数
+		scaleTransition.setCycleCount(1);
+		// 是否自动反转
+		scaleTransition.setAutoReverse(false);
+
+		return scaleTransition;
+	}
+
+	/**
+	 * 增加上升分数的节点
+	 * 
+	 * @param fatherNode所要增加节点的父节点
+	 * @param fontSize节点填充内容的字体大小
+	 * @param scoreLabelX节点的x起始坐标
+	 * @param scoreLabelY节点的起始坐标
+	 * @param addScore节点所填内容
+	 * 
+	 * @return 返回新生成的节点
+	 * */
+	public static Text addNode(AnchorPane fatherNode, int fontSize,
+			double scoreLabelX, double scoreLabelY, String addScore) {
+
+		// 每个泡泡糖逐个上升时的分数
+		Text scorePer = new Text();
+		// 设置显示内容字体大小和颜色
+		scorePer.setFont(Font.font(null, FontWeight.BOLD, fontSize));
+		scorePer.setFill(Color.WHITE);
+		// 设置增加Text的位置坐标
+		scorePer.setX(scoreLabelX);
+		scorePer.setY(scoreLabelY);
+		// 设置添加内容
+		scorePer.setText("" + addScore);
+		// 把Text添加到要显示的面板fatherNode
+		fatherNode.getChildren().add(scorePer);
+		return scorePer;
+	}
+
+	/**
+	 * 达到过关得分后动画通知
+	 * */
+	public static void passedFlag(AnchorPane mAnchorPane) {
+		// 设置过关通知的位置和内容（恭喜过关）
+		Text passNotice = (Text) addNode(mAnchorPane, 40,
+				StarAnimation.PASSNOTICE_X, StarAnimation.PASSNOTICE_Y,
+				Message.LEVEL_OK);
+		passNotice.setFill(Color.WHITE);
+		// 设置奖励内容缩放时间，内容先放大3倍再
+		ScaleTransition noticeScale = scoreScale(1000, passNotice, 3, 1);
+		// 设置奖励内容渐变时间1s
+		FadeTransition noticeFade = scoreFadeOut(1000, passNotice);
+
+		SequentialTransition passNoticeTransition = new SequentialTransition(noticeScale,
+				new PauseTransition(Duration.millis(50)), noticeFade);
+		passNoticeTransition.setOnFinished(new EventHandler<ActionEvent>() {
+			@Override
+			public void handle(ActionEvent event) {
+				mAnchorPane.getChildren().remove(passNotice);
+			}
+		});
+		passNoticeTransition.play();
+	}
+
+	/**
+	 * 动画显示奖励分数
+	 * 
+	 * @param root动画要显示的跟节点
+	 * @param awardScore奖励分数
+	 * @param leftStarNum剩余泡泡糖个数
+	 */
+	public static ParallelTransition awardAnimation(AnchorPane root,
+			int awardScore, StarList mCurretStars) {
+		// 获取泡泡糖数量
+		int leftStarNum = mCurretStars.size();
+		// 创建显示信息球剩余数量对象leftInf
+		Text leftInf = (Text) addNode(root, 40, StarAnimation.LEFTINF_START_X,
+				StarAnimation.LEFTINF_START_Y, "剩余 " + leftStarNum);
+		// 创建奖励分数对象awardInf
+		Text awardInf = (Text) addNode(root, 38, StarAnimation.LEFTINF_START_X,
+				StarAnimation.AWARDINF_START_Y, "奖励" + awardScore);
+		// 创建泡泡糖剩余信息运动前半段路径
+		PathTransition firstLeftInfPathTransition = scorePath(
+				StarAnimation.LEFTINF_START_X, StarAnimation.LEFTINF_START_Y,
+				StarAnimation.TARGET_PATH_X, StarAnimation.LEFTINF_START_Y,
+				StarAnimation.LEFTINF_PATH_TIME, leftInf);
+		// 创建泡泡糖剩余信息后半段运动路径
+		PathTransition secondLeftInfPathTransition = scorePath(
+				StarAnimation.TARGET_PATH_X, StarAnimation.LEFTINF_START_Y,
+				StarAnimation.LEFTINF_END_X, StarAnimation.LEFTINF_START_Y,
+				StarAnimation.LEFTINF_PATH_TIME, leftInf);
+		// 创建奖励分数水平运动方向
+		Polyline polylineX = new Polyline();
+		// 创建奖励分数垂直运动方向
+		Polyline polylineY = new Polyline();
+		polylineX.getPoints().addAll(
+				new Double[] {
+						// 添加水平运动起始点（LEFTINF_START_X, AWARDINF_START_Y,）
+						// 终点(TARGET_PATH_X,AWARDINF_START_Y )
+						StarAnimation.LEFTINF_START_X,
+						StarAnimation.AWARDINF_START_Y,
+						StarAnimation.TARGET_PATH_X,
+						StarAnimation.AWARDINF_START_Y });
+		// 奖励分数大于0，设置垂直运动方向，否则水平移出
+		if (awardScore > 0) {
+			// 添加水平运动起始点（TARGET_PATH_X, AWARDINF_START_Y,）
+			// 终点(TARGET_PATH_X,TARGET_PATH_Y )
+			polylineY.getPoints().addAll(
+					new Double[] { StarAnimation.TARGET_PATH_X,
+							StarAnimation.AWARDINF_START_Y,
+							StarAnimation.TARGET_PATH_X,
+							StarAnimation.TARGET_PATH_Y });
+		} else {
+			// 奖励为0，水平运动
+			polylineY.getPoints().addAll(
+					new Double[] { StarAnimation.TARGET_PATH_X,
+							StarAnimation.AWARDINF_START_Y,
+							StarAnimation.LEFTINF_END_X,
+							StarAnimation.AWARDINF_START_Y });
+		}
+		// 创建水平方向运动路径对象
+		PathTransition awardInfPathTransitionX = new PathTransition(
+				Duration.millis(StarAnimation.AWARDINF_H_TIME), polylineX);
+		// 创建垂直方向运动路径对象
+		PathTransition awardInfPathTransitionY = new PathTransition(
+				Duration.millis(StarAnimation.AWARDINF_V_TIME), polylineY);
+		// 设置要运动的对象
+		awardInfPathTransitionX.setNode(awardInf);
+		awardInfPathTransitionY.setNode(awardInf);
+
+		// 设置剩余泡泡糖与奖励分数渐变时间
+		FadeTransition leftInfFade = scoreFadeOut(10, leftInf);
+		FadeTransition awardInfFade = scoreFadeOut(10, awardInf);
+		// 剩余泡泡糖依次执行水平运动，暂停1s渐变,水平运动移出
+		SequentialTransition leftInfSwq = new SequentialTransition(
+				firstLeftInfPathTransition, new PauseTransition(
+						Duration.millis(1500)), secondLeftInfPathTransition,
+				leftInfFade);
+		leftInfFade.setOnFinished(new EventHandler<ActionEvent>() {
+			@Override
+			public void handle(ActionEvent event) {
+				root.getChildren().remove(leftInf);
+			}
+		});
+		// 奖励分数依次执行水平运动，暂停1s，垂直（或水平）运动，渐变
+		SequentialTransition awardInfSwq = new SequentialTransition(
+				awardInfPathTransitionX, new PauseTransition(
+						Duration.millis(1500)), awardInfPathTransitionY,
+				awardInfFade);
+		awardInfSwq.setOnFinished(new EventHandler<ActionEvent>() {
+			@Override
+			public void handle(ActionEvent event) {
+				root.getChildren().remove(awardInf);
+			}
+		});
+		// 创建并行执行对象
+		ParallelTransition parallelTransition = new ParallelTransition();
+		// 添加要并行执行的对象
+		parallelTransition.getChildren().addAll(leftInfSwq, awardInfSwq);
+		// 开启并行
+		parallelTransition.setCycleCount(1);
+		parallelTransition.play();
+
+		return parallelTransition;
+
+	}
+
+	/**
+	 * 切换关时出现提示信息（关数和目标分数）
+	 * 
+	 * @param mAnchorPane
+	 *            要显示出现信息的面板
+	 */
+	public static SequentialTransition passNotice(AnchorPane mAnchorPane,
+			int nextLevel, int targetScore) {
+		// 获取所要添加面板的X轴坐标
+		double noticeX = StarAnimation.CHANGE_LEVEL_NOTICE_X;
+		// 获取所要添加面板的Y轴坐标
+		double noticeY = StarAnimation.CHANGE_LEVEL_NOTICE_Y;
+		// 设置添加内容，通关等级和目标分数
+		Text passNotice = new Text("       第" + nextLevel + "关\n" + "目标分数："
+				+ targetScore);
+		passNotice.setLayoutX(noticeX);
+		passNotice.setLayoutY(noticeY);
+		passNotice.setFill(Color.WHITE);
+		passNotice.setFont(Font.font(null, FontWeight.BOLD, 35));
+		Platform.runLater(new Runnable() {
+
+			@Override
+			public void run() {
+				mAnchorPane.getChildren().add(passNotice);
+			}
+		});
+
+		// 设置passNotice渐变时间
+		FadeTransition passFade = scoreFadeOut(10, passNotice);
+		// 依次执行：停留2s后执行渐变
+		SequentialTransition seqTransition = new SequentialTransition(
+				new PauseTransition(Duration.millis(2000)), // 暂停2s
+				passFade);
+		seqTransition.setOnFinished(new EventHandler<ActionEvent>() {
+			@Override
+			public void handle(ActionEvent event) {
+				mAnchorPane.getChildren().remove(passNotice);
+			}
+		});
+		seqTransition.play();
+		return seqTransition;
+	}
+
+}package cn.campsg.practical.bubble.common;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import javafx.scene.control.Label;
+import javafx.scene.layout.Pane;
+import cn.campsg.practical.bubble.entity.Position;
+import cn.campsg.practical.bubble.entity.Star;
+import cn.campsg.practical.bubble.entity.StarList;
+import cn.campsg.practical.bubble.entity.Star.StarType;
+import cn.campsg.practical.bubble.service.StarService;
+
+/**
+ * 
+ * 窗体工具类，提供以下功能：<br>
+ * <ul>
+ * <li>1. 将Label视图对象转换为泡泡糖对象。</li>
+ * <li>2. 将泡泡糖对象转化为Label视图对象。</li>
+ * <li>3. 获得所有待消除的泡泡糖的坐标</li>
+ * </ul>
+ * 
+ * 
+ * 
+ * @author Frank.Chen
+ * @version 1.5
+ */
+public final class StarFormUtils {
+
+	/* 泡泡糖图标宽度 */
+	public static final int STAR_WIDTH = 48;
+
+	/* 泡泡糖图标高度 */
+	public static final int STAR_HEIGHT = 48;
+
+	/* 分数动画移动距离 */
+	public static final int SCORE_MOVE_DISTANCE = 230;
+
+	public static List<String> mStarStylesheets = null;
+
+	static {
+		mStarStylesheets = new ArrayList<String>();
+		mStarStylesheets.add("blue_star");
+		mStarStylesheets.add("green_star");
+		mStarStylesheets.add("yellow_star");
+		mStarStylesheets.add("red_star");
+		mStarStylesheets.add("purple_star");
+	}
+
+	/**
+	 * 将Label视图转换为泡泡糖对象
+	 * 
+	 * @param starFrame
+	 *            Label视图
+	 * @return 泡泡糖对象
+	 * 
+	 * @see List<Label> convert(StarList stars, StartEventHandler handler)
+	 */
+	public static Star convert(Label starFrame) {
+		Star star = new Star();
+
+		// 获得Label视图在布局中对应的行和列，Label视图的行列来自于初始化时的赋值
+		int row = Integer.parseInt(starFrame.getUserData().toString()
+				.split("[;]")[0]);
+		int col = Integer.parseInt(starFrame.getUserData().toString()
+				.split("[;]")[1]);
+		star.setPosition(new Position(row, col));
+
+		// 设置样式
+		int styleIndex = mStarStylesheets.indexOf(starFrame.getStyleClass()
+				.get(starFrame.getStyleClass().size() - 1));
+		star.setType(StarType.valueOf(styleIndex));
+
+		return star;
+	}
+	
+//	/**
+//	 * 将泡泡糖集合转化为Label视图集合
+//	 * 
+//	 * @param stars 泡泡糖集合
+//	 * @return Label视图集合
+//	 */
+//	public static List<Label> convert(StarList stars) {
+//		return convert(stars, null);
+//	}
+
+	/**
+	 * 将泡泡糖集合转化为Label视图集合（含泡泡糖事件对象植入）
+	 * 
+	 * @param stars 泡泡糖集合
+	 * @return Label视图集合
+	 */
+	public static List<Label> convert(StarList stars) {
+
+		List<Label> starFrames = new ArrayList<Label>();
+
+		int row = 0;
+		int col = 0;
+
+		for (int i = 0; i < stars.size(); i++) {
+			if(stars.get(i) == null)
+				continue;
+			
+			// 获取Star的行与列
+			row = stars.get(i).getPosition().getRow();
+			col = stars.get(i).getPosition().getColumn();
+
+			if (row < 0 || row >= StarService.MAX_ROW_SIZE)
+				continue;
+
+			if (col < 0 || col >= StarService.MAX_COLUMN_SIZE)
+				continue;
+
+			// 创建并设置Label视图的长与宽
+			Label starFrame = new Label();
+			starFrame.setPrefWidth(STAR_WIDTH);
+			starFrame.setPrefHeight(STAR_HEIGHT);
+
+//			// 设置点击事件
+//			if (handler != null)
+//				starFrame.setOnMouseClicked(handler);
+
+			// Label视图的ID为s+行号+列号（例如：s00,s01）
+			starFrame.setId("s" + row + col);
+			// 为Label设置一个固定传参属性，用于标记当前Label的行与列，便于判断
+			starFrame.setUserData(row + ";" + col);
+			// 设置Label的坐标
+			starFrame.setLayoutX(col * STAR_WIDTH);
+			starFrame.setLayoutY(row * STAR_HEIGHT);
+			// 设置泡泡糖的样式
+			starFrame.getStyleClass().add(
+					mStarStylesheets.get(stars.get(i).getType().value()));
+
+			// 添加入列表
+			starFrames.add(starFrame);
+		}
+
+		return starFrames;
+	}
+	
+	/**
+	 * 从界面泡泡糖整列中寻找指定泡泡糖对应的Label视图对象。
+	 * 
+	 * @param stars			指定的泡泡糖对象集合
+	 * @param parent		界面泡泡糖整列
+	 * @return					Label视图对象集合
+	 */
+	public static List<Label> findFrames(StarList stars, Pane parent) {
+		List<Label> starFrames = new ArrayList<Label>();
+
+		for (int i = 0; i < stars.size(); i++) {
+			
+			Label label = findFrame(stars.get(i), parent);
+
+			if (label != null)
+				starFrames.add(label);
+		}
+
+		return starFrames;
+	}
+
+	/**
+	 * 从界面泡泡糖整列中寻找指定泡泡糖对应的Label视图对象。
+	 * 
+	 * @param star			指定的泡泡糖对象
+	 * @param parent		界面泡泡糖整列
+	 * @return					Label视图对象
+	 */
+	public static Label findFrame(Star star, Pane parent) {
+		int row = star.getPosition().getRow();
+		int col = star.getPosition().getColumn();
+		
+		//通过id寻找泡泡糖的行和列前加s
+		String id = "#s" + row + col;
+
+		Label label = (Label) parent.lookup(id);
+
+		return label;
+	}
+
+	/**
+	 * 获得所有待消除的泡泡糖的坐标，存放方式是一个泡泡糖占两个空间，第一个是x，第二个是y
+	 * 
+	 * @param clearStars待消除的泡泡糖列表
+	 * @return 泡泡糖列表所对应的x,y坐标集合
+	 * */
+	public static List<Integer> getClearStarsCoordinate(StarList clearStars) {
+		List<Integer> clearStarsCoordinate = new ArrayList<Integer>();
+
+		for (int i = 0; i < clearStars.size(); i++) {
+			// 遍历待消除泡泡糖的行与列
+			int starRow = clearStars.get(i).getPosition().getRow();
+			int starColumn = clearStars.get(i).getPosition().getColumn();
+			// 把泡泡视图所在mAnchorPane的列转化为主面板root下对应的x坐标
+			int starX = starColumn * STAR_WIDTH;
+			// 把泡泡视图所在mAnchorPane的行转化为主面板root下对应的y坐标
+			int starY = starRow * STAR_WIDTH + SCORE_MOVE_DISTANCE;
+			// 把泡泡对应的坐标添加到List集合中
+			clearStarsCoordinate.add(starX);
+			clearStarsCoordinate.add(starY);
+
+		}
+		// 返回泡泡糖列表在root面板对应的坐标
+		return clearStarsCoordinate;
+	}
+
+}
+package cn.campsg.practical.bubble.service;
+
+import java.io.BufferedReader;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.InputStreamReader;
+
+import org.apache.log4j.Logger;
+
+import cn.campsg.practical.bubble.entity.Score;
+
+/**
+ * 该类用于等于score.conf配置文件,<br>
+ * 被读取的分数数据将会被保存在Score组件中。
+ * 
+ * @author Frank.Chen
+ * @version 1.0
+ *
+ */
+public class ScoreManager {
+
+	private Logger logger = Logger.getLogger(ScoreManager.class);
+
+	/* score.conf文件的路径 */
+	public static final String CONF_PATH = "score.conf";
+
+	/* 用于保存分数的对象 */
+	private Score score = null;
+
+	/* 单例对象 */
+	private static ScoreManager conf = null;
+
+	/* 单例构建方法 */
+	public static ScoreManager getInstance() {
+
+		if (conf == null)
+			conf = new ScoreManager();
+
+		return conf;
+	}
+
+	private ScoreManager() {
+
+		score = new Score();
+
+		try {
+
+			// 读取score.conf配置文件
+			BufferedReader br = new BufferedReader(new InputStreamReader(
+					getClass().getClassLoader().getResourceAsStream(CONF_PATH)));// new
+																					// FileReader(CONF_PATH));
+
+			// 读取关卡分数，当前读取配置文件中的分数是默认第一关的通关分
+			score.setLevelScore(Integer.parseInt(br.readLine()));
+			// 读取通过后每次关卡的递增分，例如：第一关1000分，第二关levelScore + step分
+			score.setStep(Integer.parseInt(br.readLine()));
+			// 读取达到关卡倍增上限后的分数增值数，例如：达到第四关后，每关递增分数=step + increment
+			score.setIncrement(Integer.parseInt(br.readLine()));
+			// 读取关卡倍增数，每几关分数递增一次。
+			score.setLength(Integer.parseInt(br.readLine()));
+
+			br.close();
+
+		} catch (FileNotFoundException e) {
+			logger.error(e.getMessage());
+			score = null;
+
+		} catch (NumberFormatException | IOException e) {
+			logger.error(e.getMessage());
+			score = null;
+		}
+	}
+
+	public Score getScore() {
+		return score;
+	}
+
+}
+package cn.campsg.practical.bubble.service;
+
+import cn.campsg.practical.bubble.entity.StarList;
+
+public interface ScoreService {
+	
+	/* 剩余不可消除的泡泡奖励的最高得分 */
+	public static final int TOP_AWARD_SCORE = 2000;
+
+	/* 剩余不可消除的泡泡奖励的极限 */
+	public static final int AWARD_LIMIT = 10;
+	
+	/* 剩余不可消除的泡泡单个奖励的最低得分  */
+	public static final int LOWER_AWARD_SCORE = 20;
+	
+	/* 消除一个泡泡糖的最低得分 */
+	public static final int LOWER_SCORE = 5;
+
+	/**
+	 * 计算出下一关的通关分数
+	 * 
+	 * @param 下一关关卡
+	 * @return 计算出的得分
+	 * 
+	 */
+	public int nextLevelTarget(int nextLevel);
+	
+	/**
+	 * 获得当前关的通关分数
+	 * 
+	 * @return 计算出的得分
+	 * 
+	 */
+	public int getCurrentLevelScore();
+
+	/**
+	 * 根据点击后获取的待消除泡泡糖计算出得分<br>
+	 * 点击后泡泡糖消除得分规则: <br>
+	 * 1. 消除第1颗泡泡糖 --> 得5分 <br>
+	 * 2. 消除第2颗泡泡糖 --> 得15分 <br>
+	 * 3. 消除第3颗泡泡糖 --> 得25分 <br>
+	 * 4. 消除第4颗泡泡糖 --> 得35分<br>
+	 * 5. 消除第5颗泡泡糖 --> 得45分<br>
+	 * 
+	 * @param stars 根据点击后获取的待消除泡泡糖集合
+	 * @return 计算出的得分
+	 * */
+	public int getScoreByStars(StarList stars);
+
+	/**
+	 * 根据点击后获取的待消除泡泡糖数量计算出得分<br>
+	 * 点击后泡泡糖消除得分规则: <br>
+	 * 1. 消除第1颗泡泡糖 --> 得5分 <br>
+	 * 2. 消除第2颗泡泡糖 --> 得15分 <br>
+	 * 3. 消除第3颗泡泡糖 --> 得25分 <br>
+	 * 4. 消除第4颗泡泡糖 --> 得35分<br>
+	 * 5. 消除第5颗泡泡糖 --> 得45分<br>
+	 * 
+	 * @param stars 根据点击后获取的待消除泡泡糖数量
+	 * @return 计算出的得分
+	 * */
+	public int getScoreByNum(int stars);
+
+	/**
+	 * 无可消除泡泡糖是，计算剩余无可消除泡泡可以获得奖励分数
+	 * 
+	 * @param awardStarNum剩余泡泡糖个数
+	 * @return 剩余泡泡糖奖励分数
+	 * */
+	public int getAwardScore(int awardStarNum);
+
+	/**
+	 * 判断当前分数是否已经达到进入下一关的要求
+	 * 
+	 * @param score 当前得分
+	 * @return true:允许进入下一关，false:不允许进入下一关
+	 */
+	public boolean isChangeLevel(int score);
+
+	/**
+	 * 根据得分与关卡号判断是否需要出现“恭喜通关”<br>
+	 * 注意：在一关中，“恭喜通关”仅且仅能显示一次。
+	 * 
+	 * @param currentLevel 当前关卡等级   
+	 * @param score 当前得分
+	 * @return true:通知，false:不通知
+	 */
+	public boolean isNoticedPassLevel(int currentLevel, int score);
+}
+package cn.campsg.practical.bubble.service;
+
+import org.apache.log4j.Logger;
+
+import cn.campsg.practical.bubble.entity.Score;
+import cn.campsg.practical.bubble.entity.StarList;
+
+/**
+ * 
+ * 分数服务类用于为界面提供以下功能<br>
+ * 1. 计算关卡通关分数<br>
+ * 2. 切关判定<br>
+ * 3. 根据消除的泡泡计算得分<br>
+ * 4. 计算剩余泡泡糖的得分奖励<br>
+ * 
+ * @author Frank.Chen
+ * @version 1.1
+ *
+ */
+public class ScoreServiceImpl implements ScoreService {
+
+	private Logger logger = Logger.getLogger(ScoreServiceImpl.class);
+
+	/* 分数配置文件工具类 */
+	private ScoreManager mConfiguration = null;
+
+	/* 用于判定当前关卡“恭喜通关”是否已经被通知过一次 */
+	public static int mLevelCounter = 1;
+
+	public ScoreServiceImpl() {
+		mConfiguration = ScoreManager.getInstance();
+	}
+
+	/**
+	 * 根据得分与关卡号判断是否需要出现“恭喜通关”<br>
+	 * 注意：在一关中，“恭喜通关”仅且仅能显示一次。
+	 * 
+	 * @param currentLevel 当前关卡等级   
+	 * @param score 当前得分
+	 * @return true:通知，false:不通知
+	 */
+	@Override
+	public boolean isNoticedPassLevel(int currentLevel, int score) {
+		
+		//判断分数是否已经达到通关要求
+		if (!isChangeLevel(score))
+			return false;
+
+		// 判断当前关卡是否已经显示“恭喜通关”字样。
+		if (currentLevel != mLevelCounter) 
+			return false;
+		
+		//如果没有显示过“恭喜通关”，那么返回true，并且通过累加mLevelCounter防止多次出现“恭喜通关”
+		mLevelCounter++;
+		return true;
+
+	}
+
+	/**
+	 * 根据要切换的关卡等级获取目标分数
+	 * 
+	 * @param 下一关的关卡
+	 * @return 计算出的得分
+	 * 
+	 */
+	@Override
+	public int nextLevelTarget(int nextLevel) {
+		
+		Score score = mConfiguration.getScore();
+		
+		if (score == null)
+			return 0;
+
+		// 更新保存本关的目标分数
+		score.setLevelScore(score.getLevelScore() + (nextLevel - 1)
+				/ score.getLength() * score.getIncrement() + score.getStep());
+
+		// 返回本关目标分数
+		return score.getLevelScore();
+	}
+	
+	/**
+	 * 获得当前关的通关分数
+	 * 
+	 * @return 计算出的得分
+	 * 
+	 */
+	@Override
+	public int getCurrentLevelScore() {
+
+		return mConfiguration.getScore().getLevelScore();
+	}
+
+	/**
+	 * 根据点击后获取的待消除泡泡糖计算出得分<br>
+	 * 点击后泡泡糖消除得分规则: <br>
+	 * 1. 消除第1颗泡泡糖 --> 得5分 <br>
+	 * 2. 消除第2颗泡泡糖 --> 得15分 <br>
+	 * 3. 消除第3颗泡泡糖 --> 得25分 <br>
+	 * 4. 消除第4颗泡泡糖 --> 得35分<br>
+	 * 5. 消除第5颗泡泡糖 --> 得45分<br>
+	 * 
+	 * @param stars
+	 *            根据点击后获取的待消除泡泡糖集合
+	 * @return 计算出的得分
+	 * */
+	@Override
+	public int getScoreByStars(StarList stars) {
+
+		return getScoreByNum(stars.size());
+	}
+
+	/**
+	 * 根据点击后获取的待消除泡泡糖数量计算出得分<br>
+	 * 点击后泡泡糖消除得分规则: <br>
+	 * 1. 消除第1颗泡泡糖 --> 得5分 <br>
+	 * 2. 消除第2颗泡泡糖 --> 得15分 <br>
+	 * 3. 消除第3颗泡泡糖 --> 得25分 <br>
+	 * 4. 消除第4颗泡泡糖 --> 得35分<br>
+	 * 5. 消除第5颗泡泡糖 --> 得45分<br>
+	 * 
+	 * @param stars
+	 *            根据点击后获取的待消除泡泡糖数量
+	 * @return 计算出的得分
+	 * 
+	 * */
+	@Override
+	public int getScoreByNum(int stars) {
+
+		if (stars <= 0)
+			return 0;
+
+		// 计算点击后满足消除条件泡泡糖的总得分
+		int score = LOWER_SCORE * stars * stars;
+
+		if (logger.isDebugEnabled())
+			logger.debug("消除泡泡糖个数为:" + stars + "--消除所得分数为：" + score);
+
+		return score;
+	}
+
+	/**
+	 * 无可消除泡泡糖是，计算剩余无可消除泡泡可以获得奖励分数
+	 * 
+	 * 无可消除泡泡糖奖励得分规则: <br>
+	 * 1. 剩余1颗泡泡糖 --> 奖励1620分 <br>
+	 * 2. 剩余2颗泡泡糖 --> 奖励1280分 <br>
+	 * 3. 剩余3颗泡泡糖 --> 奖励980分 <br>
+	 * 4. 剩余4颗泡泡糖 --> 奖励720分 <br>
+	 * 5. 剩余5颗泡泡糖 --> 奖励500分 <br>
+	 * 
+	 * @param awardStarNum剩余泡泡糖个数
+	 * @return 剩余泡泡糖奖励分数
+	 * */
+	@Override
+	public int getAwardScore(int leftStarNum) {
+
+		// 判断是否达到剩余泡泡糖奖励范围
+		if (leftStarNum < AWARD_LIMIT)
+			return LOWER_AWARD_SCORE*(leftStarNum - AWARD_LIMIT)*(leftStarNum - AWARD_LIMIT);
+		else
+			return 0;
+
+	}
+
+	/**
+	 * 判断当前分数是否已经达到进入下一关的要求
+	 * 
+	 * @param score 当前得分
+	 * @return true:允许进入下一关，false:不允许进入下一关
+	 */
+	@Override
+	public boolean isChangeLevel(int score) {
+
+		int targetScore = mConfiguration.getScore().getLevelScore();
+
+		return score >= targetScore ? true : false;
+
+	}
+}
+package cn.campsg.practical.bubble.service;
+
+import cn.campsg.practical.bubble.entity.Star;
+import cn.campsg.practical.bubble.entity.StarList;
+
+public interface StarService {
+	
+	/* 泡泡糖最大行数 */
+	public static final int MAX_ROW_SIZE = 10;
+	
+	/* 泡泡糖最大列数 */
+	public static final int MAX_COLUMN_SIZE = 10;
+	
+	/* 泡泡糖的种类数 */
+	public static final int STAR_TYPES = 5;
+		
+	/**
+	 * 创建屏幕画布随机泡泡糖（10 * 10）
+	 * 
+	 * @return 泡泡糖列表-供画面显示
+	 */
+	public StarList createBubbleMatrix();
+	
+	/**
+	 * 用户点击泡泡糖，获取满足消除条件的泡泡糖列表
+	 * 
+	 * @param base 被用户点击的泡泡糖
+	 * @param sList 当前画面上泡泡的列表
+	 * @return 需要清除的泡泡糖
+	 */
+	public StarList tobeClearedStars(Star base,StarList sList);
+	
+	/**
+	 * 消除泡泡糖后，获取待移动泡泡糖列表(仅限垂直列表的泡泡糖)<br>
+	 * 该功能固定在消除被点击泡泡糖之后运行
+	 * 
+	 * @see tobeClearedStars
+	 * 
+	 * @param clearStars 待清除的泡泡糖列表（以此作为判定待移动泡泡糖的基础）
+	 * @param currentStarList 当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return 待移动泡泡糖列表
+	 */
+	public StarList getVMovedStars(StarList clearStars,StarList currentStarList);
+	
+	/**
+	 * 消除泡泡糖后，获取待移动泡泡糖列表(仅限水平列表的泡泡糖)<br>
+	 * 该功能固定在垂直列表的泡泡糖之后运行
+	 * 
+	 * @see getYMovedStars
+	 * 
+	 * @param currentStarList 当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return 待移动泡泡糖列表
+	 */
+	public StarList getHMovedStars(StarList currentStarList);
+	
+	/**
+	 * 判断是否还存在未消除的泡泡糖
+	 * 
+	 * @param currentStarList 当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return true:任然有未消除的泡泡糖,false:没有未消除的泡泡糖
+	 */
+	public boolean tobeEliminated(StarList currentStarList);
+	
+	/**
+	 * 获取无法消除泡泡糖列表
+	 * 
+	 * @param curretStars 当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return 无法消除泡泡糖列表
+	 * */
+	public StarList getAwardStarList(StarList currentStarList);
+	
+
+}
+package cn.campsg.practical.bubble.service;
+
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.log4j.Logger;
+
+import cn.campsg.practical.bubble.entity.MovedStar;
+import cn.campsg.practical.bubble.entity.Position;
+import cn.campsg.practical.bubble.entity.Star;
+import cn.campsg.practical.bubble.entity.Star.StarType;
+import cn.campsg.practical.bubble.entity.StarList;
+import cn.campsg.practical.bubble.util.StarsUtil;
+
+/**
+ * 
+ * 泡泡糖业务计算服务类，用于为界面提供以下服务<br>
+ * 1. 创建屏幕画布随机泡泡糖<br>
+ * 2. 切关判定<br>
+ * 3. 根据消除的泡泡计算得分<br>
+ * 4. 计算剩余泡泡糖的得分奖励<br>
+ * 
+ * @author Frank.Chen
+ * @version 2.5
+ *
+ */
+public class StarServiceImpl implements StarService {
+
+	private Logger logger = Logger.getLogger(StarServiceImpl.class);
+
+	/**
+	 * 创建屏幕画布随机泡泡糖（10 * 10）
+	 * 
+	 * @return 泡泡糖列表-供画面显示
+	 */
+	@Override
+	public StarList createBubbleMatrix() {
+
+		StarList stars = new StarList();
+
+		for (int row = 0; row < StarService.MAX_ROW_SIZE; row++) {
+
+			for (int col = 0; col < StarService.MAX_COLUMN_SIZE; col++) {
+
+				Star star = new Star();
+				// 设置泡泡糖在画面上的位置
+				star.setPosition(new Position(row, col));
+				// 产生随机的泡泡糖
+				int typeIndex = (int) (Math.random() * StarService.STAR_TYPES);
+				star.setType(StarType.valueOf(typeIndex));
+				// 加入列表
+				stars.add(star);
+			}
+		}
+
+		return stars;
+
+	}
+
+	/**
+	 * 以给定泡泡糖（用户点击的）为基础，向左右、上下路径依次寻找相同类型的泡泡糖
+	 * 
+	 * @param base
+	 *            基础泡泡糖（用户点击的）
+	 * @param sList
+	 *            原始泡泡糖列表（界面上排列的泡泡糖）
+	 * @param clearStars
+	 *            待清除的泡泡糖列表
+	 */
+	private void findStarsByPath(Star base, StarList sList, StarList clearStars) {
+		// 获取当前被点击泡泡糖的行和列
+		int row = base.getPosition().getRow();
+		int col = base.getPosition().getColumn();
+		StarType type = base.getType();
+
+		Star star = null;
+
+		// 向左侧路径步进判断
+		if (col - 1 >= 0) {
+			// 不碰到左侧边界的情况下，获取被点击泡泡糖的左侧泡泡糖
+			star = (Star) sList.findout(row, (col - 1));
+			// 已经被消除的泡泡糖在界面上排列的泡泡糖列表中会以null表示
+			// 已经被消除的泡泡糖与清除列表中已经存在的泡泡糖无需重复判断，否则会进入死循环。
+			if (star != null && !clearStars.isexisted(star)) {
+				if (star.getType() == type) {
+					// 被点击泡泡糖与判定泡泡保持一致时，加入列表。
+					clearStars.add(StarsUtil.copy(star));
+					// 继续按左侧路径步进判断。
+					findStarsByPath(star, sList, clearStars);
+				}
+			}
+		}
+
+		// 向右侧路径步进判断
+		if (col + 1 < StarService.MAX_COLUMN_SIZE) {
+			// 不碰到右侧边界的情况下，获取被点击泡泡糖的右侧泡泡糖
+			star = (Star) sList.findout(row, (col + 1));
+			// 已经被消除的泡泡糖在界面上排列的泡泡糖列表中会以null表示
+			// 已经被消除的泡泡糖与清除列表中已经存在的泡泡糖无需重复判断，否则会进入死循环。
+			if (star != null && !clearStars.isexisted(star)) {
+				if (star.getType() == type) {
+					// 被点击泡泡糖与判定泡泡保持一致时，加入列表。
+					clearStars.add(StarsUtil.copy(star));
+					// 继续按右侧路径步进判断。
+					findStarsByPath(star, sList, clearStars);
+				}
+			}
+		}
+
+		// 向上方路径步进判断
+		if (row - 1 >= 0) {
+			// 不碰到上方边界的情况下，获取被点击泡泡糖的上方泡泡糖
+			star = (Star) sList.findout((row - 1), col);
+			// 已经被消除的泡泡糖在界面上排列的泡泡糖列表中会以null表示
+			// 已经被消除的泡泡糖与清除列表中已经存在的泡泡糖无需重复判断，否则会进入死循环。
+			if (star != null && !clearStars.isexisted(star)) {
+				if (star.getType() == type) {
+					// 被点击泡泡糖与判定泡泡保持一致时，加入列表。
+					clearStars.add(StarsUtil.copy(star));
+					// 继续按上方路径步进判断。
+					findStarsByPath(star, sList, clearStars);
+				}
+			}
+		}
+
+		// 向下方路径步进判断
+		if (row + 1 < MAX_ROW_SIZE) {
+			// 不碰到下方边界的情况下，获取被点击泡泡糖的下方泡泡糖
+			star = (Star) sList.findout((row + 1), col);
+			// 已经被消除的泡泡糖在界面上排列的泡泡糖列表中会以null表示
+			// 已经被消除的泡泡糖与清除列表中已经存在的泡泡糖无需重复判断，否则会进入死循环。
+			if (star != null && !clearStars.isexisted(star)) {
+				if (star.getType() == type) {
+					// 被点击泡泡糖与判定泡泡保持一致时，加入列表。
+					clearStars.add(StarsUtil.copy(star));
+					// 继续按下方路径步进判断。
+					findStarsByPath(star, sList, clearStars);
+				}
+			}
+		}
+
+		// 以上四个判断都不进，则表示四周都没用泡泡糖了，那么跳出递归方法。
+	}
+
+	/**
+	 * 用户点击泡泡糖，获取满足消除条件的泡泡糖列表
+	 * 
+	 * @param base
+	 *            被用户点击的泡泡糖
+	 * @param sList
+	 *            当前画面上泡泡的列表
+	 * @return 需要清除的泡泡糖
+	 */
+	@Override
+	public StarList tobeClearedStars(Star base, StarList mCurrent) {
+
+		// 用于保存待清除的泡泡糖
+		StarList clearStars = new StarList();
+
+		// 从当前列表中获取指定行与指定列的泡泡糖（base泡泡糖）
+		// 将该泡泡糖作为清除对象保存于列表中
+		// 注意：所有待清除的泡泡糖都应该在原始的界面泡泡糖列表中
+		clearStars.add(base);
+
+		// 以被点击泡泡糖为基础按左右、上下不同路径寻找相同类型（颜色）的待清除泡泡糖
+		findStarsByPath(base, mCurrent, clearStars);
+
+		if (clearStars.size() == 1)
+			clearStars.clear();
+
+		if (logger.isDebugEnabled())
+			logger.debug("待清除的泡泡糖内存列表:" + clearStars);
+
+		return clearStars;
+	}
+
+	/**
+	 * 消除泡泡糖后，获取待移动泡泡糖列表(仅限垂直列表的泡泡糖)<br>
+	 * 该功能固定在消除被点击泡泡糖之后运行
+	 * 
+	 * @param clearStars
+	 *            待清除的泡泡糖列表（以此作为判定待移动泡泡糖的基础）
+	 * @param currentStarList
+	 *            当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return 待移动泡泡糖列表
+	 */
+	public StarList getVMovedStars(StarList clearStars,
+			StarList currentStarList) {
+
+		if (clearStars == null || clearStars.size() == 0)
+			return null;
+
+		// 用于保存待移动的泡泡糖
+		StarList moveStars = new StarList();
+
+		// 对待清除的泡泡糖执行分组操作
+		/*
+		 * 例如: 待消除的泡泡糖为：(2,1);(3,1);(4,1);(2,2);(3,2);(4,2)
+		 * 分组后：1-{(2,1);(3,1);(4,1)}；2-{(2,2);(3,2);(4,2)}
+		 */
+		Map<Integer, StarList> groupedStars = StarsUtil.group(clearStars);
+
+		// 按列获取所有待删除的泡泡糖（一列可能对应多行泡泡糖）
+		Iterator<Integer> keys = groupedStars.keySet().iterator();
+		while (keys.hasNext()) {
+			// 获取列序号
+			Integer column = keys.next();
+			// 获取当前列所有对应需要删除的泡泡糖行
+			StarList values = groupedStars.get(column);
+
+			// 最大行数（从泡泡糖阵列底部网上搜索待移动的泡泡糖）
+			int starPosition = values.lastElement().getPosition().getRow();
+
+			// 移动间隔数量
+			int span = 0;
+
+			// 从底部往上搜索待移动的泡泡糖
+			for (int row = starPosition; row >= 0; row--) {
+				// 获取泡泡糖
+				Star star = currentStarList.findout(row, column);
+				// 虽然没有到达泡泡糖阵列顶部，但是当前列已无可消除的泡泡糖那么停止当前列搜索
+				if (star == null)
+					break;
+
+				// 如果被搜索的泡泡糖在清除队列中，则表示该泡泡糖待清除无需移动
+				// 那么待移动路径长度加1
+				if (clearStars.isexisted(star)) {
+					span++;
+					continue;
+				}
+
+				MovedStar mStar = StarsUtil.toMovedStar(star);
+				// 设置泡泡糖上下移动距离
+				mStar.getMovedPosition().setRow(
+						mStar.getPosition().getRow() + span);
+				// 待修改
+				mStar.getMovedPosition().setColumn(
+						mStar.getPosition().getColumn());
+				// 保存待移动的泡泡糖
+				moveStars.add(mStar);
+
+			}
+		}
+		if (logger.isDebugEnabled())
+			logger.debug("待移动泡泡糖内存列表（垂直移动方向的）:" + moveStars + "待移动泡泡糖个数为："
+					+ moveStars.size());
+
+		return moveStars;
+	}
+
+	/**
+	 * 消除泡泡糖后，获取待移动泡泡糖列表(仅限水平列表的泡泡糖)<br>
+	 * 该功能固定在垂直列表的泡泡糖之后运行
+	 * 
+	 * @param currentStarList
+	 *            当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * 
+	 * @return 待移动泡泡糖列表
+	 */
+	public StarList getHMovedStars(StarList currentStarList) {
+
+		// 获取所有被清空泡泡糖的列
+		List<Integer> nullColumns = getEmpyColumns(currentStarList);
+
+		// 没有完全被清空泡泡糖的列，返回null，告知界面X轴无需移动
+		if (nullColumns == null || nullColumns.size() == 0)
+			return null;
+
+		StarList moveStars = new StarList();
+
+		// 获取判定启示列
+		int starPosition = nullColumns.get(0) + 1;
+
+		// 水平移动距离
+		int span = 1;
+
+		// 从判定启示列->右侧边界逐层判断
+		for (int column = starPosition; column < StarService.MAX_COLUMN_SIZE; column++) {
+			// 遇到一个列被清空则水平移动距离+1
+			if (nullColumns.contains(column)) {
+				span++;
+				continue;
+			}
+
+			// 当前列泡泡糖如果没有被清空，则将待移动的泡泡糖加入到移动列表中
+			for (int row = (StarService.MAX_ROW_SIZE - 1); row >= 0; row--) {
+
+				Star star = currentStarList.findout(row, column);
+
+				if (star == null)
+					break;
+
+				
+				MovedStar mStar = StarsUtil.toMovedStar(star);
+				// 设置泡泡糖上下移动距离
+				mStar.getMovedPosition().setRow(mStar.getPosition().getRow());
+				// 待修改
+				mStar.getMovedPosition().setColumn(
+						mStar.getPosition().getColumn() - span);
+				// 保存待移动的泡泡糖
+				moveStars.add(mStar);
+			}
+		}
+
+		if (logger.isDebugEnabled())
+			logger.debug("待移动泡泡糖内存列表（水平移动方向的）:" + moveStars);
+
+		return moveStars;
+
+	}
+
+	/**
+	 * 获取被清空所有泡泡糖的列序号
+	 * 
+	 * @param currentStarList
+	 *            当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return 被清空所有泡泡糖的列序号集合
+	 */
+	private List<Integer> getEmpyColumns(StarList currentStarList) {
+
+		List<Integer> ret = new ArrayList<Integer>();
+
+		// 如果每列底部不存在泡泡糖（即最底部的泡泡糖不存在）那么该列视为已被清空
+		for (int column = 0; column < StarService.MAX_COLUMN_SIZE; column++) {
+
+			if (currentStarList.findout((StarService.MAX_ROW_SIZE - 1), column) == null)
+				ret.add(column);
+		}
+
+		if (logger.isDebugEnabled())
+			logger.debug("当前内存中被清除的空列:" + ret);
+
+		return ret;
+	}
+
+	/**
+	 * 判断是否还存在未消除的泡泡糖
+	 * 
+	 * @param currentStarList
+	 *            当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return true:任然有未消除的泡泡糖,false:没有未消除的泡泡糖
+	 * 
+	 */
+	@Override
+	public boolean tobeEliminated(StarList currentStarList) {
+
+		// 待消除泡泡糖列表
+		StarList clearStars = new StarList();
+
+		for (int i = 0; i < currentStarList.size(); i++) {
+
+			Star star = currentStarList.get(i);
+
+			if (star != null)
+				findStarsByPath(star, currentStarList, clearStars);
+
+			// 如果待消除泡泡糖列表不等于0，则表示还有可消除的泡泡糖，返回true
+			if (clearStars.size() > 0)
+				return true;
+		}
+
+		if (logger.isDebugEnabled())
+			logger.debug("不存在可消除的泡泡糖个数=" + getLeftStarNum(currentStarList));
+
+		return false;
+	}
+
+	/**
+	 * 获取剩余泡泡糖个数
+	 * 
+	 * @param mCurretStars
+	 *            当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return 剩余泡泡糖个数
+	 * */
+	private int getLeftStarNum(StarList currentStarList) {
+		int leftStar = 0;
+		// 遍历泡泡糖列表，把不为null的泡泡糖记为剩余泡泡糖
+		for (int i = 0; i < currentStarList.size(); i++) {
+			if (currentStarList.get(i) != null)
+				leftStar++;
+		}
+		if (logger.isDebugEnabled())
+			logger.debug("还剩余未消除的泡泡糖数量为" + leftStar);
+		// 返回剩余泡泡糖数目
+		return leftStar;
+	}
+
+	/**
+	 * 获取无法消除泡泡糖列表
+	 * 
+	 * @param curretStars
+	 *            当前完整的界面泡泡糖列表（已经被消除的泡泡糖用null表示）
+	 * @return 无法消除泡泡糖列表
+	 * */
+	public StarList getAwardStarList(StarList curretStars) {
+		StarList awardStarList = new StarList();
+
+		// 遍历curretStars，把不为null的泡泡糖加到奖励泡泡糖列表中
+		for (int i = 0; i < curretStars.size(); i++) {
+			// tempStar = curretStars.get(i);
+			if (curretStars.get(i) != null) {
+				awardStarList.add(StarsUtil.copy(curretStars.get(i)));
+			}
+		}
+
+		if (logger.isDebugEnabled())
+			logger.debug("还剩余未消除的泡泡糖数量为" + awardStarList);
+		// 返回奖励泡泡糖列表
+		return awardStarList;
+
+	}
+
+}
+package cn.campsg.practical.bubble.util;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import cn.campsg.practical.bubble.entity.MovedStar;
+import cn.campsg.practical.bubble.entity.Position;
+import cn.campsg.practical.bubble.entity.Star;
+import cn.campsg.practical.bubble.entity.StarList;
+
+/**
+ * 泡泡糖/待移动泡泡糖实体类工具类，提供以下功能：<br>
+ * <ul>
+ * <li>1. 排序指定列表中的泡泡糖-按列升序排序，列相同按行升序排序（冒泡排序算法）。</li>
+ * <li>2. 对指定列表中的泡泡糖按行分组。</li>
+ * <li>3. 克隆一个泡泡糖对象</li>
+ * </ul>
+ * 
+ * @see cn.campsg.practical.bubble.entity.Star
+ * @see cn.campsg.practical.bubble.entity.MovedStar
+ * 
+ * 
+ * @author Frank.Chen
+ * @version 1.5
+ *
+ */
+public class StarsUtil {
+
+	/**
+	 * 排序指定列表中的泡泡糖<br>
+	 * 排序规则：按列升序排序，如果列相同按行升序排序<br>
+	 * 排序算法：冒泡排序
+	 * 
+	 * @param starList
+	 *            待排序的泡泡糖列表
+	 */
+	private static void reorder(StarList starList) {
+
+		for (int i = 0; i < starList.size() - 1; i++) {
+			for (int j = 0; j < starList.size() - i - 1; j++) {
+				// 获取第N个泡泡糖
+				Star preStar = starList.get(j);
+				// 获取第N个泡泡糖的后一个泡泡糖（N+1）
+				Star nextStar = starList.get(j + 1);
+
+				// 判断第N个泡泡糖的列是否大于第N+1个泡泡糖的列
+				if (preStar.getPosition().getColumn() > nextStar.getPosition()
+						.getColumn()) {
+					// 如果第N个泡泡糖的列大于第N+1个泡泡糖的列
+					// 那么互换两个泡泡糖保证列号大的泡泡糖在底部
+					exchange(preStar, nextStar);
+					continue;
+				}
+
+				// 如果第N个泡泡糖的列等于第N+1个泡泡糖的列
+				if (preStar.getPosition().getColumn() == nextStar.getPosition()
+						.getColumn()) {
+					// 那么判定两个相等列号的泡泡糖的行号
+					// 行号更大的泡泡糖向后交换，保证排序规则是升序。
+					if (preStar.getPosition().getRow() > nextStar.getPosition()
+							.getRow()) {
+						exchange(preStar, nextStar);
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * 按升序规则交换两个泡泡糖在列表中的只
+	 * 
+	 * @param preStar
+	 *            第N个泡泡糖
+	 * @param nextStar
+	 *            第N+1个泡泡糖
+	 */
+	private static void exchange(Star preStar, Star nextStar) {
+		// 创建临时交换泡泡糖对象
+		Star tempStar = new Star();
+
+		// 将第N个泡泡糖的数据保存入临时交换泡泡糖对象
+		tempStar.getPosition().setRow(preStar.getPosition().getRow());
+		tempStar.getPosition().setColumn(preStar.getPosition().getColumn());
+		tempStar.setType(preStar.getType());
+
+		// 将第N+1个泡泡糖的数据保存入第N个泡泡糖
+		preStar.getPosition().setRow(nextStar.getPosition().getRow());
+		preStar.getPosition().setColumn(nextStar.getPosition().getColumn());
+		preStar.setType(nextStar.getType());
+
+		// 将临时交换泡泡糖对象的数据保存入第N+1个泡泡糖
+		nextStar.getPosition().setRow(tempStar.getPosition().getRow());
+		nextStar.getPosition().setColumn(tempStar.getPosition().getColumn());
+		nextStar.setType(tempStar.getType());
+	}
+
+	/**
+	 * 按列号对泡泡糖集合中泡泡糖进行分组（相同列号的泡泡糖分在一个组别中）<br>
+	 * 分组前应该先对泡泡糖集合进行排序。
+	 * 
+	 * @see sort
+	 * 
+	 * @param mStarList
+	 *            待分组的泡泡糖列表
+	 * @return 
+	 *         分组结果，Map中的key是列号，value是相同列的泡泡糖集合，例如：1-{(1,2);(1,3);(1,4)}；2-{(2,2)
+	 *         ;(2,3);(2,4)}
+	 */
+	public static Map<Integer, StarList> group(StarList starList) {
+
+		Map<Integer, StarList> ret = new HashMap<Integer, StarList>();
+
+		reorder(starList);
+
+		for(int i=0;i<starList.size();i++){
+			Star star = starList.get(i);
+			if (!ret.containsKey(star.getPosition().getColumn())) {
+				// 如果返回结果中没有当前列号，则新建一个成员
+				StarList starQueue = new StarList();
+				starQueue.add(star);
+				ret.put(star.getPosition().getColumn(), starQueue);
+			} else {
+				// 如果返回结果有当前列号，那么直接使用当前列号对应的数据
+				ret.get(star.getPosition().getColumn()).add(star);
+			}
+		}
+
+		return ret;
+	}
+
+	/**
+	 * 克隆一个新的泡泡糖。
+	 * 
+	 * @param star
+	 *            待克隆的泡泡糖
+	 * @return 新的泡泡糖（独立内存地址的泡泡糖）。
+	 */
+	public static Star copy(Star star) {
+
+		Star ret = new Star();
+
+		ret.setPosition(new Position(star.getPosition().getRow(), star
+				.getPosition().getColumn()));
+		ret.setType(star.getType());
+
+		return ret;
+	}
+
+	public static MovedStar toMovedStar(Star star) {
+
+		MovedStar ret = new MovedStar();
+
+		ret.setPosition(new Position(star.getPosition().getRow(), star
+				.getPosition().getColumn()));
+		ret.setType(star.getType());
+
+		return ret;
+	}
+}
