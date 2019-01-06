@@ -1,0 +1,5 @@
+1.下载eclipse：下载地址https://www.eclipse.org/downloads/
+2.配置java环境，
+3.将代码文件导入eclipse并编译
+4.开始游戏
+PS：教程https://www.runoob.com/java/java-environment-setup.html
